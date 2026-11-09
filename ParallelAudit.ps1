@@ -1,0 +1,174 @@
+﻿# ParallelAudit.ps1: orchestrates THREE independent read-only tasks.
+# Windows PowerShell 2.0+; LICENSE has a watchdog so the survey cannot hang.
+# Only the parent Survey.ps1 writes KhaoSat\DuLieuGoc and Inventory.xlsx.
+function Invoke-ParallelAudit([string]$Root,[scriptblock]$OnLicenseTimeout) {
+    $result=New-Object PSObject -Property @{
+        License=$null;Security=$null;Extra=$null;Compliance=$null;
+        Apps=@(); Errors=@(); Mode='PARALLEL'; Timings=@{}
+    }
+    $workDir=Join-Path $env:TEMP ('V5_Audit_'+[guid]::NewGuid().ToString('N'))
+    $jobs=@()
+    $failed=$false
+    $worker=Join-Path $Root 'ParallelAuditWorker.ps1'
+    # Configurable hard limit for the LICENSE worker. Other workers are independent.
+    $licenseMaxSec=40
+    try {
+        if ($env:AUDIT_LICENSE_TIMEOUT_SEC -and
+            [int]$env:AUDIT_LICENSE_TIMEOUT_SEC -ge 10 -and
+            [int]$env:AUDIT_LICENSE_TIMEOUT_SEC -le 120) {
+            $licenseMaxSec=[int]$env:AUDIT_LICENSE_TIMEOUT_SEC
+        }
+    } catch { $licenseMaxSec=40 }
+    try {
+        if(-not (Test-Path -LiteralPath $worker)){throw 'Khong tim thay ParallelAuditWorker.ps1'}
+        [void](New-Item -ItemType Directory -Path $workDir -Force -ErrorAction Stop)
+        $ps=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $sysNative=Join-Path $env:SystemRoot 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+        if(Test-Path -LiteralPath $sysNative){$ps=$sysNative}
+        if(-not (Test-Path -LiteralPath $ps)){throw 'Windows PowerShell executable not found'}
+        foreach($name in @('LICENSE','SECURITY','POLICIES')){
+            $psi=New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName=$ps
+            $psi.Arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$worker+'" -Task '+$name+' -JobDir "'+$workDir+'" -Root "'+$Root+'"'
+            $psi.UseShellExecute=$false
+            $psi.CreateNoWindow=$true
+            $psi.WorkingDirectory=$Root
+            $p=[System.Diagnostics.Process]::Start($psi)
+            if($null -eq $p){throw ('Khong khoi dong duoc tien trinh '+$name)}
+            $job=New-Object PSObject -Property @{
+                Name=$name; Proc=$p; ReadLines=0; Completed=$false;
+                Began=(Get-Date); Seconds=''; HadError=$false
+            }
+            $jobs+=,$job
+            SurveyLog ('[PARALLEL] Da bat dau '+$name+' (PID '+$p.Id+')') 'STEP'
+        }
+        # LICENSE watchdog prevents indefinite waits. All other workers continue as before.
+        # Every worker logs to its own TEMP file; parent relays log to USB log.
+        $nextHeartbeat=(Get-Date).AddSeconds(15)
+        while(@($jobs | Where-Object {-not $_.Completed}).Count -gt 0){
+            foreach($job in $jobs){
+                $logFile=Join-Path $workDir ($job.Name+'.log')
+                try {
+                    if(Test-Path -LiteralPath $logFile){
+                        $lines=@(Get-Content -LiteralPath $logFile -Encoding UTF8 -ErrorAction Stop)
+                        if($lines.Count -gt $job.ReadLines){
+                            for($i=$job.ReadLines;$i -lt $lines.Count;$i++){
+                                $textLine=[string]$lines[$i]
+                                $level='INFO'
+                                if($textLine -match '\[ERROR\]'){$level='ERROR'}
+                                elseif($textLine -match '\[WARN\]'){$level='WARN'}
+                                elseif($textLine -match '\[OK\]'){$level='OK'}
+                                SurveyLog $textLine $level
+                            }
+                            $job.ReadLines=$lines.Count
+                        }
+                    }
+                }catch{}
+                if(-not $job.Completed -and $job.Name -eq 'LICENSE' -and
+                   -not $job.Proc.HasExited -and
+                   ((Get-Date)-$job.Began).TotalSeconds -ge $licenseMaxSec) {
+                    # Office licensing providers can freeze. Stop only LICENSE;
+                    # do NOT cancel security/policies or restart license in Survey.
+                    try {$job.Proc.Kill()}catch{}
+                    try {[void]$job.Proc.WaitForExit(1200)}catch{}
+                    $job.Completed=$true
+                    $job.HadError=$true
+                    $failed=$true
+                    $job.Seconds=[string]$licenseMaxSec
+                    $result.Timings['LICENSE']=$job.Seconds
+                    $result.Errors+=('LICENSE_TIMEOUT_'+$licenseMaxSec+'s')
+                    SurveyLog ('[PARALLEL] LICENSE qua '+$licenseMaxSec+'s. Dung LICENSE va xu ly Office thu cong ngay neu co cai.') 'WARN'
+                    # Invoke in the *interactive parent* immediately: no need
+                    # to wait for SECURITY or POLICIES to finish first. The
+                    # child LICENSE process is already terminated.
+                    if ($OnLicenseTimeout) {
+                        try {
+                            [void](& $OnLicenseTimeout)
+                        } catch {
+                            $result.Errors+=('OFFICE_TIMEOUT_PROMPT_ERROR: '+$_.Exception.Message)
+                            SurveyLog ('Khong hien duoc bang nhap Office: '+$_.Exception.Message) 'WARN'
+                        }
+                    }
+                }
+                if(-not $job.Completed -and $job.Proc.HasExited){
+                    # Drain any final log lines on next loop iteration before completion.
+                    $job.Completed=$true
+                    $seconds=[math]::Round(((Get-Date)-$job.Began).TotalSeconds,1)
+                    $job.Seconds=[string]$seconds
+                    $result.Timings[$job.Name]=$job.Seconds
+                    if($job.Proc.ExitCode -eq 0 -and (Test-Path -LiteralPath (Join-Path $workDir ($job.Name+'.xml')))){
+                        SurveyLog ('[PARALLEL] '+$job.Name+' HOAN_TAT ('+$job.Seconds+'s)') 'OK'
+                    }else{
+                        $job.HadError=$true
+                        $failed=$true
+                        $result.Errors+=($job.Name+' worker failed (exit code '+$job.Proc.ExitCode+')')
+                        SurveyLog ('[PARALLEL] '+$job.Name+' LOI - can doi chieu; cac nhom khac van chay.') 'WARN'
+                    }
+                }
+            }
+            if(@($jobs | Where-Object {-not $_.Completed}).Count -gt 0){
+                if((Get-Date) -ge $nextHeartbeat){
+                    $active=@($jobs | Where-Object {-not $_.Completed} | ForEach-Object {$_.Name}) -join ', '
+                    SurveyLog ('[PARALLEL] Dang cho: '+$active+'. LICENSE gioi han '+$licenseMaxSec+'s.') 'INFO'
+                    $nextHeartbeat=(Get-Date).AddSeconds(15)
+                }
+                Start-Sleep -Milliseconds 900
+            }
+        }
+        # Drain one last time (worker may have logged after parent first noticed exit).
+        foreach($job in $jobs){
+            try {
+                $logFile=Join-Path $workDir ($job.Name+'.log')
+                if(Test-Path $logFile){
+                    $lines=@(Get-Content -LiteralPath $logFile -Encoding UTF8)
+                    for($i=$job.ReadLines;$i -lt $lines.Count;$i++){ SurveyLog ([string]$lines[$i]) 'INFO' }
+                }
+            }catch{}
+            if($job.HadError){continue}
+            try {
+                $obj=Import-Clixml -Path (Join-Path $workDir ($job.Name+'.xml')) -ErrorAction Stop
+                if($job.Name -eq 'LICENSE'){$result.License=$obj}
+                elseif($job.Name -eq 'SECURITY'){
+                    $result.Security=$obj
+                    $appsPath=Join-Path $workDir 'SECURITY_APPS.csv'
+                    if(Test-Path -LiteralPath $appsPath){
+                        . (Join-Path $Root 'CsvCompat.ps1')
+                        $result.Apps=@(Read-Utf8Csv -FilePath $appsPath)
+                    }
+                }else{
+                    $result.Extra=$obj
+                    $result.Compliance=Import-Clixml -Path (Join-Path $workDir 'POLICIES_COMPLIANCE.xml') -ErrorAction Stop
+                }
+            }catch{
+                $failed=$true
+                $result.Errors+=('Import '+$job.Name+': '+$_.Exception.Message)
+                SurveyLog ('Khong nap duoc ket qua '+$job.Name+': '+$_.Exception.Message) 'WARN'
+            }
+        }
+        if($failed){$result.Mode='PARALLEL_MOT_SO_NHOM_LOI'}
+        return $result
+    }catch{
+        SurveyLog ('Khong the khoi dong nhom song song: '+$_.Exception.Message) 'WARN'
+        $result.Errors+=('Startup: '+$_.Exception.Message)
+        $result.Mode='PARALLEL_STARTUP_ERROR'
+        # If startup failed, stop orphan worker processes; do not wait forever.
+        return $result
+    }finally{
+        foreach($job in $jobs){
+            try {
+                if($job.Proc -and -not $job.Proc.HasExited){
+                    # Only reached on early error/interruption. Normal path waited for ALL.
+                    $job.Proc.Kill()
+                    [void]$job.Proc.WaitForExit(1000)
+                }
+            }catch{}
+            try {if($job.Proc){$job.Proc.Dispose()}}catch{}
+        }
+        # Worker directory includes only transient metadata; keep on failure for troubleshooting.
+        if($result.Mode -eq 'PARALLEL'){
+            try {Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue}catch{}
+        }else{
+            SurveyLog ('Nhat ky tien trinh phu (may local, khong USB): '+$workDir) 'WARN'
+        }
+    }
+}

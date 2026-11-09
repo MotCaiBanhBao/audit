@@ -1,0 +1,18 @@
+Category,Label,Pattern,Note
+ACTIVATOR_PATCH,KMSPico,\bKMSpico\b|\bAutoPico\b,Possible license activator
+ACTIVATOR_PATCH,AutoKMS,\bAutoKMS\b,Possible license activator
+ACTIVATOR_PATCH,KMSAuto,\bKMSAuto(?:\s*Net|\s*Lite)?\b,Possible license activator
+ACTIVATOR_PATCH,Microsoft Toolkit,\bMicrosoft\s+Toolkit\b,Possible license activator
+ACTIVATOR_PATCH,HEU KMS Activator,\bHEU[_\s-]*KMS\b,Possible license activator
+ACTIVATOR_PATCH,AAct Activator,\bAAct(?:\.exe)?\b|\bAAct[_\s-]*Network\b,Possible license activator
+ACTIVATOR_PATCH,Re-Loader Activator,\bRe-Loader\s+Activator\b|\bReLoader\b,Possible license activator
+ACTIVATOR_PATCH,KMS VL ALL,\bKMS[_\s-]*VL[_\s-]*ALL\b,Possible license activator
+ACTIVATOR_PATCH,Adobe GenP,\bAdobe\s+GenP\b|\bGenP\s*\d*(?:\.exe)?\b,Possible application patcher
+ACTIVATOR_PATCH,Adobe Zii,\bAdobe\s+Zii\b,Possible application patcher
+REMOTE_CONTROL,AnyDesk,\bAnyDesk\b,Remote control app - not proof of crack
+REMOTE_CONTROL,TeamViewer,\bTeamViewer\b,Remote control app - not proof of crack
+REMOTE_CONTROL,UltraViewer,\bUltraViewer\b,Remote control app - not proof of crack
+REMOTE_CONTROL,RustDesk,\bRustDesk\b,Remote control app - not proof of crack
+REMOTE_CONTROL,Ammyy Admin,\bAmmyy\b,Remote control app - not proof of crack
+REMOTE_CONTROL,Supremo,\bSupremo\b,Remote control app - not proof of crack
+REMOTE_CONTROL,Remote Utilities,\bRemote\s+Utilities\b,Remote control app - not proof of crack
