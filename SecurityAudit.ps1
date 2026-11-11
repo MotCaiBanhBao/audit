@@ -134,7 +134,7 @@ function GetAVSummary_Legacy($apps) {
         Kaspersky='KHONG_PHAT_HIEN'; Note=''
     }
     $registered=@()
-    try { $registered=@(Get-WmiObject -Namespace 'root\SecurityCenter2' -Class AntiVirusProduct -ErrorAction Stop) }
+    try { $registered=@(Get-WmiObject -Namespace 'root\SecurityCenter2' -Class AntiVirusProduct -ErrorAction Stop);Write-RawEvidence 'SecurityCenter2_AntiVirusProduct' 'Get-WmiObject -Namespace root\SecurityCenter2 -Class AntiVirusProduct' $registered }
     catch { $r.Note='Windows Security Center khong truy cap duoc; co the do quyen hoac WMI.' }
     $names=@($registered | ForEach-Object { SecClean $_.displayName } | Where-Object { $_ })
     $kapps=@($apps | Where-Object { $_.Name -match '(?i)Kaspersky' })
@@ -146,7 +146,7 @@ function GetAVSummary_Legacy($apps) {
     $def=$null
     $defQueryError=''
     if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
-        try { $def=Get-MpComputerStatus -ErrorAction Stop }
+        try { $def=Get-MpComputerStatus -ErrorAction Stop;Write-RawEvidence 'Defender_Status' 'Get-MpComputerStatus' $def }
         catch { $defQueryError=SecClean $_.Exception.Message; SecLog ('Defender query: '+$defQueryError) 'WARN' }
     } else { $defQueryError='Get-MpComputerStatus khong co tren may' }
     if($def) {
@@ -223,7 +223,7 @@ function SecClassifyError([object]$errorObject) {
 function GetTpmAudit {
     $r=New-Object PSObject -Property @{ State='CAN_XAC_MINH'; Spec=''; Detail=''; Source='Win32_Tpm WMI' }
     try {
-        $t=@(Get-WmiObject -Namespace 'root\CIMV2\Security\MicrosoftTpm' -Class Win32_Tpm -ErrorAction Stop)
+        $t=@(Get-WmiObject -Namespace 'root\CIMV2\Security\MicrosoftTpm' -Class Win32_Tpm -ErrorAction Stop);Write-RawEvidence 'Win32_Tpm' 'Get-WmiObject -Namespace root\CIMV2\Security\MicrosoftTpm -Class Win32_Tpm' $t
         if($t.Count -gt 0) {
             $r.Spec=SecClean $t[0].SpecVersion
             if($r.Spec -match '(^|[,;\s])2\.0([,;\s]|$)') { $r.State='TPM_2.0' }
@@ -237,7 +237,7 @@ function GetTpmAudit {
         # It reports presence/ready, NOT the TPM 2.0 spec version.
         if(Get-Command Get-Tpm -ErrorAction SilentlyContinue) {
             try {
-                $tpm=Get-Tpm -ErrorAction Stop
+                $tpm=Get-Tpm -ErrorAction Stop;Write-RawEvidence 'Get_Tpm' 'Get-Tpm' $tpm
                 if($tpm.TpmPresent -eq $true) { $r.State='TPM_CO_NHUNG_CHUA_RO_VERSION'; $r.Source='Get-Tpm fallback' }
                 elseif($tpm.TpmPresent -eq $false) { $r.State='KHONG_PHAT_HIEN_TPM'; $r.Source='Get-Tpm fallback' }
             } catch { $r.Detail += ' | Get-Tpm: '+(SecClean $_.Exception.Message) }
@@ -254,7 +254,7 @@ function GetBitlockerAudit {
     }
     try {
         $drive=([string]$env:SystemDrive).TrimEnd('\')
-        $volumes=@(Get-WmiObject -Namespace 'root\CIMV2\Security\MicrosoftVolumeEncryption' -Class Win32_EncryptableVolume -ErrorAction Stop)
+        $volumes=@(Get-WmiObject -Namespace 'root\CIMV2\Security\MicrosoftVolumeEncryption' -Class Win32_EncryptableVolume -ErrorAction Stop);Write-RawEvidence 'BitLocker_EncryptableVolumes' 'Get-WmiObject -Namespace root\CIMV2\Security\MicrosoftVolumeEncryption -Class Win32_EncryptableVolume' $volumes
         $v=@($volumes | Where-Object { ([string]$_.DriveLetter).TrimEnd('\') -eq $drive } | Select-Object -First 1)
         if($v.Count -eq 0) {
             $r.State='KHONG_TIM_THAY_O_WINDOWS_TRONG_WMI'
@@ -322,6 +322,7 @@ function GetBitlockerAudit {
         if(Test-Path -LiteralPath $manage) {
             try {
                 $raw=(& $manage -status $env:SystemDrive 2>&1 | Out-String)
+                Write-RawCommandText 'BitLocker_ManageBDE' ($manage+' -status '+$env:SystemDrive) $raw '' 'OK'
                 $conv=[regex]::Match($raw,'(?im)^\s*Conversion Status\s*:\s*(.+)$')
                 $prot=[regex]::Match($raw,'(?im)^\s*Protection Status\s*:\s*(.+)$')
                 $pct=[regex]::Match($raw,'(?im)^\s*Percentage Encrypted\s*:\s*([\d\.,]+)')

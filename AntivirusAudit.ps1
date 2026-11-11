@@ -83,6 +83,7 @@ function AVRunKescli([string]$file,[string]$action){
         $r.Output=AVText ($p.StandardOutput.ReadToEnd())
         $r.Error=AVText ($p.StandardError.ReadToEnd())
         $r.Success=($p.ExitCode -eq 0)
+        Write-RawCommandText ('Kaspersky_KESCLI_'+$action) ($file+' --opswat '+$action) $r.Output $r.Error ('EXIT_'+$p.ExitCode)
     }catch{$r.Error=AVText $_.Exception.Message}
     finally{if($p){try{$p.Dispose()}catch{}}}
     return $r
@@ -97,14 +98,14 @@ function GetAVFullSummary($apps){
     $installed=@(AVFindInstalled $apps)
     $wsc=@();$wscError=''
     foreach($ns in @('root\SecurityCenter2','root\SecurityCenter')) {
-        try {$wsc=@(Get-WmiObject -Namespace $ns -Class AntiVirusProduct -ErrorAction Stop);break}
+        try {$wsc=@(Get-WmiObject -Namespace $ns -Class AntiVirusProduct -ErrorAction Stop);Write-RawEvidence 'AV_SecurityCenter_AntiVirusProduct' ('Get-WmiObject -Namespace '+$ns+' -Class AntiVirusProduct') $wsc;break}
         catch{$wscError=AVText $_.Exception.Message}
     }
     $services=@()
-    try {$services=@(Get-Service -ErrorAction Stop)}catch{SecLog ('AV Get-Service: '+(AVText $_.Exception.Message)) 'WARN'}
+    try {$services=@(Get-Service -ErrorAction Stop);Write-RawEvidence 'Services_All' 'Get-Service' $services}catch{SecLog ('AV Get-Service: '+(AVText $_.Exception.Message)) 'WARN'}
     $def=$null;$defErr=''
     if(Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue){
-        try {$def=Get-MpComputerStatus -ErrorAction Stop} catch {$defErr=AVText $_.Exception.Message;SecLog ('Defender query: '+$defErr) 'WARN'}
+        try {$def=Get-MpComputerStatus -ErrorAction Stop;Write-RawEvidence 'Defender_GetMpComputerStatus' 'Get-MpComputerStatus' $def} catch {$defErr=AVText $_.Exception.Message;SecLog ('Defender query: '+$defErr) 'WARN'}
     }else{$defErr='CMDLET_KHONG_CO_TREN_WINDOWS_NAY'}
     $registeredNames=@($wsc | ForEach-Object {AVText $_.displayName} | Where-Object {$_})
     $items=@()

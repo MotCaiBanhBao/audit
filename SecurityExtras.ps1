@@ -75,7 +75,7 @@ function CheckFirewallCompat {
         # NetSecurity cmdlet is not installed on Windows 7. Call it only when available.
         if(Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) {
             try {
-                $profiles=@(Get-NetFirewallProfile -ErrorAction Stop)
+                $profiles=@(Get-NetFirewallProfile -ErrorAction Stop);Write-RawEvidence 'Firewall_Profiles' 'Get-NetFirewallProfile' $profiles
                 foreach($x in $profiles) {
                     $n=[string]$x.Name
                     if(@('Domain','Private','Public') -contains $n) {
@@ -96,7 +96,7 @@ function CheckHotfixCompat {
         Status='CAN_XAC_MINH'; KB=''; Date=''; Latest3=''; Count=''; Source='Win32_QuickFixEngineering WMI'; Error=''
     }
     try {
-        $fixes=@(Get-WmiObject -Class Win32_QuickFixEngineering -ErrorAction Stop)
+        $fixes=@(Get-WmiObject -Class Win32_QuickFixEngineering -ErrorAction Stop);Write-RawEvidence 'WMI_QuickFixEngineering' 'Get-WmiObject Win32_QuickFixEngineering' $fixes
         $r.Count=[string]$fixes.Count
         if($fixes.Count -eq 0){$r.Status='KHONG_TIM_THAY_HOTFIX_TRONG_WMI'; return $r}
         $dated=@()
@@ -168,7 +168,7 @@ function CheckGuestCompat {
     $r=New-Object PSObject -Property @{Status='CAN_XAC_MINH';Name='';Enabled='';Source='Win32_UserAccount SID *-501';Error=''}
     try {
         # SID RID 501 identifies the built-in Guest account even on localized Windows.
-        $accounts=@(Get-WmiObject -Class Win32_UserAccount -Filter 'LocalAccount=True' -ErrorAction Stop)
+        $accounts=@(Get-WmiObject -Class Win32_UserAccount -Filter 'LocalAccount=True' -ErrorAction Stop);Write-RawEvidence 'WMI_LocalUserAccounts' 'Get-WmiObject Win32_UserAccount -Filter LocalAccount=True' $accounts
         $guest=@($accounts | Where-Object {$_.SID -match '-501$'} | Select-Object -First 1)
         if($guest.Count -eq 0){$r.Status='GUEST_KHONG_TIM_THAY_TRONG_WMI';return $r}
         $r.Name=[string]$guest[0].Name
@@ -180,7 +180,7 @@ function CheckGuestCompat {
 function CheckDNSCompat {
     $r=New-Object PSObject -Property @{Status='CAN_XAC_MINH';PerAdapter='';Source='Win32_NetworkAdapterConfiguration (WMI)';Error=''}
     try {
-        $configs=@(Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop)
+        $configs=@(Get-WmiObject -Class Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' -ErrorAction Stop);Write-RawEvidence 'WMI_NetworkAdapterConfiguration_Enabled' 'Get-WmiObject Win32_NetworkAdapterConfiguration -Filter IPEnabled=True' $configs
         if($configs.Count -eq 0) {$r.Status='KHONG_CO_CARD_MANG_DANG_DUNG_IP';return $r}
         $all=@();$details=@();$preferred=@()
         foreach($c in $configs) {
@@ -237,7 +237,7 @@ function CheckScreenLockCompat {
         $status=@()
         $seconds=0
         # Machine inactivity limit became supported in Windows 8; do not claim it applies to Win7.
-        $os=Get-WmiObject -Class Win32_OperatingSystem -ErrorAction Stop
+        $os=Get-WmiObject -Class Win32_OperatingSystem -ErrorAction Stop;Write-RawEvidence 'WMI_OperatingSystem_Extra' 'Get-WmiObject Win32_OperatingSystem' $os
         $version=[version]([string]$os.Version)
         if($mach.State -eq 'FOUND' -and [int]::TryParse($r.MachineInactivity,[ref]$seconds) -and $seconds -gt 0) {
             if($version.Major -gt 6 -or ($version.Major -eq 6 -and $version.Minor -ge 2)){
@@ -259,7 +259,7 @@ function CheckScreenLockCompat {
         $r.Status=$status -join '; '
         $r.Evidence=$sources -join ' | '
         $interactive=''
-        try {$cs=Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop; $interactive=[string]$cs.UserName}catch{}
+        try {$cs=Get-WmiObject -Class Win32_ComputerSystem -ErrorAction Stop;Write-RawEvidence 'WMI_ComputerSystem_Extra' 'Get-WmiObject Win32_ComputerSystem' $cs; $interactive=[string]$cs.UserName}catch{}
         if($interactive -and $r.User -ine $interactive){
             $r.Status+='; HKCU_CO_THE_LA_ADMIN_KHAC_NGUOI_DUNG'
         }

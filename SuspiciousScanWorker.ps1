@@ -7,6 +7,7 @@ param(
     [string]$StatusPath
 )
 $ErrorActionPreference='Stop'
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'RawEvidence.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'CsvCompat.ps1')
 function SetStage([string]$stage) {
     try { Set-Content -LiteralPath $StatusPath -Value $stage -Encoding ASCII -ErrorAction SilentlyContinue } catch {}
@@ -25,6 +26,7 @@ try {
     # slow registry reads. Avoid Win32_Product/MSI repair side effects.
     SetStage 'ENUMERATE_INSTALLED_APPS'
     $apps=New-Object System.Collections.ArrayList
+    $rawInstalled=New-Object System.Collections.ArrayList
     $roots=@(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
         'HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -38,6 +40,7 @@ try {
             foreach($key in @(Get-ChildItem -Path $root -ErrorAction Stop)) {
                 try {
                     $detail=Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction Stop
+                    [void]$rawInstalled.Add($detail)
                     if($detail.DisplayName -and ([string]$detail.DisplayName).Trim()) {
                         [void]$apps.Add((New-Object PSObject -Property @{
                             Name=(Flat $detail.DisplayName);Version=(Flat $detail.DisplayVersion);Publisher=(Flat $detail.Publisher)
@@ -47,6 +50,7 @@ try {
             }
         } catch {}
     }
+    Write-RawEvidence 'UninstallRegistry_Full' 'Get-ChildItem registry Uninstall; Get-ItemProperty each key' @($rawInstalled)
     SetStage ('WRITE_INSTALLED_APPS_'+$apps.Count)
     if($apps.Count -gt 0) {
         Write-Utf8Csv -Records @($apps | Sort-Object Name,Version -Unique) -FilePath $InputPath
@@ -59,7 +63,9 @@ try {
     }
     SetStage 'ENUMERATE_PROCESSES'
     try {
-        foreach($p in @(Get-Process -ErrorAction Stop)) {
+        $processes=@(Get-Process -ErrorAction Stop)
+        Write-RawEvidence 'Get_Process_Full' 'Get-Process' $processes
+        foreach($p in $processes) {
             if($p.ProcessName) {
                 [void]$candidates.Add((New-Object PSObject -Property @{Source='Process';Value=(Flat $p.ProcessName)}))
             }
@@ -68,7 +74,9 @@ try {
     SetStage 'ENUMERATE_SERVICES'
     # Get-Service avoids the Win32_Service WMI provider, which can stall on some PCs.
     try {
-        foreach($s in @(Get-Service -ErrorAction Stop)) {
+        $allServices=@(Get-Service -ErrorAction Stop)
+        Write-RawEvidence 'Get_Service_Full' 'Get-Service' $allServices
+        foreach($s in $allServices) {
             [void]$candidates.Add((New-Object PSObject -Property @{
                 Source='Service';Value=((Flat $s.ServiceName)+' '+(Flat $s.DisplayName)).Trim()
             }))

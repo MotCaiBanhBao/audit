@@ -46,6 +46,7 @@ function Get-OfficeInstalledReleaseIds {
     foreach ($path in $inventoryKeys) {
         try {
             $v=Get-ItemProperty -Path $path -ErrorAction Stop
+            Write-RawEvidence 'Office_ReleaseRegistry' ('Get-ItemProperty -Path '+$path) $v
             foreach ($raw in @($v.OfficeProductReleaseIds)) {
                 foreach ($part in (([string]$raw) -split '[,;\s]+')) {
                     if ($part -and $part -ne 'System.Object[]') {$ids+= $part.Trim()}
@@ -61,6 +62,7 @@ function Get-OfficeInstalledReleaseIds {
         )) {
             try {
                 $v=Get-ItemProperty -Path $path -ErrorAction Stop
+                Write-RawEvidence 'Office_ReleaseRegistry' ('Get-ItemProperty -Path '+$path) $v
                 foreach ($raw in @($v.ProductReleaseIds)) {
                     foreach ($part in (([string]$raw) -split '[,;\s]+')) {
                         if ($part -and $part -ne 'System.Object[]') {$ids+= $part.Trim()}
@@ -163,6 +165,7 @@ function Invoke-OfficeDiagnosticBounded([string]$exe,[string]$arguments,[int]$ma
         # If the command blocks or fills output buffers, time out safely.
         if (-not $p.WaitForExit($maxSeconds*1000)) {
             LicenseTrace ($label+': TIMEOUT '+$maxSeconds+'s; bo qua nguon nay')
+            Write-RawCommandText ('Office_'+$label) ($exe+' '+$arguments) '' '' ('TIMEOUT_'+$maxSeconds+'s')
             try { $p.Kill() } catch { }
             try { [void]$p.WaitForExit(1500) } catch { }
             return $null
@@ -171,11 +174,13 @@ function Invoke-OfficeDiagnosticBounded([string]$exe,[string]$arguments,[int]$ma
         $stderr=$p.StandardError.ReadToEnd()
         if ($p.ExitCode -ne 0) {
             LicenseTrace ($label+': exit code '+$p.ExitCode+'; '+($stderr -replace '[\r\n]+',' '))
+            Write-RawCommandText ('Office_'+$label) ($exe+' '+$arguments) ([string]$stdout) ([string]$stderr) ('EXIT_'+$p.ExitCode)
             return $null
         }
         return [string]$stdout
     } catch {
         LicenseTrace ($label+': loi thuc thi: '+$_.Exception.Message)
+        Write-RawCommandText ('Office_'+$label) ($exe+' '+$arguments) '' ([string]$_.Exception.Message) 'ERROR'
         return $null
     } finally {
         if ($p) {
@@ -185,7 +190,7 @@ function Invoke-OfficeDiagnosticBounded([string]$exe,[string]$arguments,[int]$ma
     }
 }
 
-function GetLicenseSummary {
+function GetLicenseSummary([switch]$WindowsOnly,[switch]$OfficeOnly) {
     LicenseTrace 'Bat dau truy van Windows activation qua WMI' 
     $r = New-Object PSObject
     $r | Add-Member NoteProperty WindowsState 'CAN_XAC_MINH'
@@ -203,18 +208,21 @@ function GetLicenseSummary {
     $r | Add-Member NoteProperty OfficeMethod ''
     $r | Add-Member NoteProperty OfficeNote ''
 
+    if(-not $OfficeOnly) {
     # Windows only (not Office). Determine the CURRENT installed edition before
     # interpreting LicenseStatus. A zero/notification status on an unrelated
     # edition must not be used to assert the current OS is unlicensed.
     # PowerShell 2.0 compatible. Read-only; never activates/modifies licenses.
     try {
         $allWins = @(Get-WmiObject -Class SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f'" -ErrorAction Stop)
+        Write-RawEvidence 'Windows_SoftwareLicensingProduct' 'Get-WmiObject SoftwareLicensingProduct -Filter Windows ApplicationID' $allWins
         $wins = @($allWins | Where-Object {
             $_.PartialProductKey -and $_.Name -match '(?i)Windows' -and $_.LicenseIsAddon -ne $true
         })
         $editionID = ''
         try {
             $osReg = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+            Write-RawEvidence 'Registry_WindowsCurrentVersion' 'Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' $osReg
             if ($osReg.EditionID) { $editionID = ([string]$osReg.EditionID).Trim() }
         } catch { }
         $selected = @()
@@ -275,11 +283,14 @@ function GetLicenseSummary {
             $r.WindowsChannel = [string]$chosen.Description
         }
     } catch {
+        Write-RawEvidence 'Windows_SoftwareLicensingProduct' 'Get-WmiObject SoftwareLicensingProduct -Filter Windows ApplicationID' $null ([string]$_.Exception.Message)
         $r.WindowsState = 'CAN_XAC_MINH_WMI_LICENSE_ERROR'
         $r.WindowsNote = [string]$_.Exception.Message
     }
 
     LicenseTrace ('Windows xong: '+$r.WindowsState)
+    } # Windows phase (independent of Office)
+    if($WindowsOnly){return $r}
     # Phase A: verify an actual Office executable. Old App Paths registry entries
     # are NOT sufficient: their default executable must still exist on disk.
     # If no Office application is found, do not ask for manual confirmation.
@@ -310,6 +321,7 @@ function GetLicenseSummary {
             $reg = Join-Path $regRoot $app
             try {
                 $key = Get-Item -LiteralPath $reg -ErrorAction Stop
+                Write-RawEvidence 'Office_AppPathRegistry' ('Get-Item -LiteralPath '+$reg) $key
                 $exePath = [string]$key.GetValue('')
                 if (-not $exePath) {continue}
                 $exePath = [Environment]::ExpandEnvironmentVariables($exePath.Trim().Trim('"'))
@@ -375,6 +387,7 @@ function GetLicenseSummary {
         try {
             LicenseTrace 'Kiem tra license Office qua WMI, doi chieu SKU da cai'
             $wmi=@(Get-WmiObject -Class SoftwareLicensingProduct -Filter "ApplicationID='0ff1ce15-a989-479d-af46-f275c6370663'" -ErrorAction Stop)
+            Write-RawEvidence 'Office_SoftwareLicensingProduct' 'Get-WmiObject SoftwareLicensingProduct -Filter Office ApplicationID' $wmi
             foreach ($item in $wmi) {
                 $name=([string]$item.Name).Trim()
                 $description=([string]$item.Description).Trim()
@@ -407,6 +420,7 @@ function GetLicenseSummary {
             # Office 2010 can use a dedicated WMI provider on older Windows.
             try {
                 $oldWmi=@(Get-WmiObject -Class OfficeSoftwareProtectionProduct -ErrorAction Stop)
+                Write-RawEvidence 'OfficeSoftwareProtectionProduct' 'Get-WmiObject OfficeSoftwareProtectionProduct' $oldWmi
                 foreach ($item in $oldWmi) {
                     $name=[string]$item.Name
                     if ($name -match '(?i)Office|Word|Excel' -and $name -notmatch '(?i)Visio|Project' -and $null -ne $item.LicenseStatus) {
@@ -434,6 +448,7 @@ function GetLicenseSummary {
                 LicenseTrace ('Kiem tra Office ospp.vbs: '+$d)
                 $out=Invoke-OfficeDiagnosticBounded 'cscript.exe' ('//Nologo "'+$ospp+'" /dstatusall') 8 'OSPP'
                 if ($null -eq $out) {continue}
+                Write-RawCommandText 'Office_OSPP' ('cscript //Nologo '+$ospp+' /dstatusall') ([string]$out) '' 'OK'
                 $hits=[regex]::Matches($out,'(?is)LICENSE NAME\s*:\s*([^\r\n]+)[\s\S]*?LICENSE STATUS\s*:\s*([^\r\n]+)')
                 foreach ($hit in $hits) {
                     $osppRows += (New-Object PSObject -Property @{
@@ -458,6 +473,7 @@ function GetLicenseSummary {
                 $psPath=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
                 $raw=Invoke-OfficeDiagnosticBounded $psPath ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$diag+'" -action list') 10 'VNEXT'
                 if ($null -eq $raw) {continue}
+                Write-RawCommandText 'Office_VNEXT' ($psPath+' -File '+$diag+' -action list') ([string]$raw) '' 'OK'
                 $vnextExecuted=$true
                 if (Test-OfficeVNextEmpty $raw) {
                     $vnextEmpty=$true

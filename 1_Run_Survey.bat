@@ -6,6 +6,8 @@ rem Set 0 below for slower PCs; keeps all data-export behavior unchanged.
 set "AUDIT_PARALLEL=1"
 rem Gioi han buoc LICENSE khi chay song song (giay). Mac dinh 40.
 set "AUDIT_LICENSE_TIMEOUT_SEC=40"
+rem Gioi han rieng truy van Windows WMI (30 giay) - SLMGR fallback 12s.
+set "AUDIT_WINDOWS_TIMEOUT_SEC=30"
 rem Console font height in pixels (20/22/24/26/28). 0=keep current font.
 set "AUDIT_FONT_PX=26"
 cd /d "%~dp0"
