@@ -17,7 +17,7 @@ function CEError([object]$e) {
 }
 function CEOSBuild {
     try {
-        $os=Get-WmiObject -Class Win32_OperatingSystem -ErrorAction Stop | Select-Object -First 1
+        $os=Get-WmiObject -Class Win32_OperatingSystem -ErrorAction Stop;Write-RawEvidence 'WMI_OS_Compliance' 'Get-WmiObject Win32_OperatingSystem' $os | Select-Object -First 1
         $ver=[version]([string]$os.Version)
         return [int]$ver.Major*100+[int]$ver.Minor
     }catch {return 999}
@@ -47,7 +47,7 @@ function CEGetSMB1 {
         $serverConfigured=$null
         if(Get-Command Get-SmbServerConfiguration -ErrorAction SilentlyContinue) {
             try {
-                $cfg=Get-SmbServerConfiguration -ErrorAction Stop
+                $cfg=Get-SmbServerConfiguration -ErrorAction Stop;Write-RawEvidence 'SMB_Server_Config' 'Get-SmbServerConfiguration' $cfg
                 if($null -ne $cfg -and $null -ne $cfg.EnableSMB1Protocol) {
                     $serverConfigured=[bool]$cfg.EnableSMB1Protocol
                     $sources+= 'Get-SmbServerConfiguration'
@@ -231,6 +231,7 @@ function CEGetTimeSync {
                 try {
                     if($proc.WaitForExit(5000)) {
                         $output=$proc.StandardOutput.ReadToEnd()
+                        Write-RawCommandText 'W32TM_QueryStatus' ($exe+' /query /status') $output '' ('EXIT_'+$proc.ExitCode)
                         if($proc.ExitCode -eq 0){
                             foreach($ln in ($output -split '\r?\n')){
                                 if($ln -match '^\s*Source\s*:\s*(.*)$'){$r.Source=CEStr $matches[1]}
@@ -242,6 +243,7 @@ function CEGetTimeSync {
                     } else {
                         try{$proc.Kill()}catch{}
                         $r.Note='w32tm qua thoi gian 5 giay, khong ket luan mat dong bo.'
+                        Write-RawCommandText 'W32TM_QueryStatus' ($exe+' /query /status') '' '' 'TIMEOUT_5s'
                     }
                 }finally{$proc.Dispose()}
             }
@@ -264,7 +266,9 @@ function CEGetTimeSync {
                 if($null -ne $proc2){
                     try {
                         if($proc2.WaitForExit(4000) -and $proc2.ExitCode -eq 0){
-                            $sourceText=CEStr $proc2.StandardOutput.ReadToEnd()
+                            $rawSource=[string]$proc2.StandardOutput.ReadToEnd()
+                            Write-RawCommandText 'W32TM_QuerySource' ($exe+' /query /source') $rawSource '' 'OK'
+                            $sourceText=CEStr $rawSource
                             if($sourceText -and $sourceText -notmatch '\r|\n'){$r.Source=$sourceText}
                         }else{if(-not $proc2.HasExited){try{$proc2.Kill()}catch{}}}
                     }finally{$proc2.Dispose()}

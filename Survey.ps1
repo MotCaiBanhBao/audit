@@ -25,6 +25,10 @@ $script:root = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $script:root 'CsvCompat.ps1')
 $script:folder = Join-Path $script:root 'KhaoSat'
 $script:rawFolder = Join-Path $script:folder 'DuLieuGoc'
+$script:rawCommandRoot=Join-Path $script:folder 'LenhGoc'
+$script:rawCommandFolder=Join-Path $script:rawCommandRoot (('Raw_'+($env:COMPUTERNAME -replace '[^a-zA-Z0-9_-]','_')+'_'+(Get-Date -Format 'yyyyMMdd_HHmmss_fff')+'_'+[guid]::NewGuid().ToString('N').Substring(0,6)))
+$env:AUDIT_RAW_OUTPUT_DIR=Join-Path $script:rawCommandFolder 'Main'
+. (Join-Path $script:root 'RawEvidence.ps1')
 $script:settings = Join-Path $script:root 'LastLocation.txt'
 $legacySettings = Join-Path $script:root 'ViTriGanNhat.txt'
 if (-not (Test-Path -LiteralPath $script:settings) -and (Test-Path -LiteralPath $legacySettings)) {
@@ -101,8 +105,14 @@ function Real([object]$v) {
     return ($s -notmatch '(?i)^(default( string)?|to be filled( by o\.?e\.?m\.?)?|o\.?e\.?m\.?|unknown|none|not specified|not available|n/?a|system serial number|system product name|system manufacturer|base board product name|baseboard product name|invalid|0+|f{8,})$')
 }
 function Wmi([string]$cl) {
-    try { return @(Get-WmiObject -Class $cl -ErrorAction Stop) }
-    catch { $script:errs += ($cl + ': '+$_.Exception.Message); SurveyLog ('WMI '+$cl+': '+$_.Exception.Message) 'WARN'; return @() }
+    try {
+        $full=@(Get-WmiObject -Class $cl -ErrorAction Stop)
+        Write-RawEvidence ('WMI_'+$cl) ('Get-WmiObject -Class '+$cl) $full
+        return $full
+    } catch {
+        Write-RawEvidence ('WMI_'+$cl) ('Get-WmiObject -Class '+$cl) $null ([string]$_.Exception.Message)
+        $script:errs += ($cl + ': '+$_.Exception.Message); SurveyLog ('WMI '+$cl+': '+$_.Exception.Message) 'WARN'; return @()
+    }
 }
 function First($x) { return @($x) | Select-Object -First 1 }
 function Distinct($x) {
@@ -203,6 +213,69 @@ function Get-QuickOfficeFallback {
     return $lic
 }
 
+# Windows activation: request operator confirmation ONLY when both automatic
+# methods could not establish activation. This input is NOT license legality.
+# Keep the original automatic evidence for later audit and troubleshooting.
+function Invoke-WindowsManualPrompt([object]$lic) {
+    if(-not $lic){return $false}
+    $state=[string]$lic.WindowsState
+    if($state -notmatch '^CAN_XAC_MINH' -and $state -ne '' -and $state -ne 'CHUA_QUET_BAN_MOI'){
+        return $false
+    }
+    $autoState=$state
+    $autoMethod=[string]$lic.WindowsMethod
+    $autoNote=[string]$lic.WindowsNote
+    $lic | Add-Member -MemberType NoteProperty -Name 'WindowsAutoState' -Value $autoState -Force
+    $lic | Add-Member -MemberType NoteProperty -Name 'WindowsAutoMethod' -Value $autoMethod -Force
+    $lic | Add-Member -MemberType NoteProperty -Name 'WindowsAutoNote' -Value $autoNote -Force
+    Write-Host ''
+    Write-Host '  WINDOWS - CHUA XAC DINH DUOC TRANG THAI KICH HOAT' -ForegroundColor Yellow
+    Write-Host ('  Ly do tu dong: '+$(if($autoState){$autoState}else{'KHONG_CO_KET_QUA'})) -ForegroundColor Yellow
+    if($autoMethod){Write-Host ('  Buoc kiem tra: '+$autoMethod) -ForegroundColor Gray}
+    if($autoNote){Write-Host ('  Chi tiet: '+$autoNote) -ForegroundColor Gray}
+    Write-Host '  Vui long KIEM TRA TRUC TIEP truoc khi tra loi:' -ForegroundColor Cyan
+    Write-Host '  Win 10: Settings > Update & Security > Activation' -ForegroundColor Gray
+    Write-Host '  Win 11: Settings > System > Activation' -ForegroundColor Gray
+    Write-Host '  Hoac xem lenh chi doc: cscript.exe //Nologo slmgr.vbs /xpr' -ForegroundColor Gray
+    Write-Host '  [1] DA_KICH_HOAT (da kiem tra tren may)' -ForegroundColor Green
+    Write-Host '  [2] CHUA_KICH_HOAT (da kiem tra tren may)' -ForegroundColor Yellow
+    Write-Host '  [3] GIU CAN_XAC_MINH (Enter de bo qua)' -ForegroundColor Gray
+    $selection=''
+    do {
+        $reply=Read-Host 'Windows - Chon 1/2/3 (hoac co / chua)'
+        $answer=([string]$reply).Trim().ToLowerInvariant()
+        try {
+            $decomposed=$answer.Normalize([System.Text.NormalizationForm]::FormD)
+            $plain=New-Object System.Text.StringBuilder
+            foreach($ch in $decomposed.ToCharArray()){
+                if([System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch) -ne [System.Globalization.UnicodeCategory]::NonSpacingMark){[void]$plain.Append($ch)}
+            }
+            $answer=$plain.ToString().Replace('đ','d')
+        }catch{}
+        $answer=[regex]::Replace($answer,'\s+',' ').Trim()
+        if($answer -match '^(1|y|yes|co|da|da kich hoat)$'){$selection='DA_KICH_HOAT';break}
+        if($answer -match '^(2|n|no|khong|chua|chua kich hoat|khong kich hoat)$'){$selection='CHUA_KICH_HOAT';break}
+        if($answer -match '^(3|\?|khong ro|chua kiem tra|chua xac minh|can xac minh)$' -or -not $answer){$selection='BO_QUA';break}
+        Write-Host '  Khong hop le. Nhap 1, 2, 3 hoac Enter.' -ForegroundColor Yellow
+    }while($true)
+    if($selection -eq 'BO_QUA'){
+        $lic.WindowsNote=('Tu dong: '+$autoState+'; '+$autoNote+' | Nguoi khao sat chua xac nhan thu cong.').Trim()
+        $lic | Add-Member -MemberType NoteProperty -Name 'WindowsManualStatus' -Value 'BO_QUA' -Force
+        SurveyLog ('Windows van CAN_XAC_MINH. Ly do: '+$autoState+'. '+$autoNote) 'WARN'
+    }else{
+        $lic.WindowsState=$selection
+        $lic.WindowsMethod='XAC_NHAN_THU_CONG'
+        $lic.WindowsNote='NGUON NHAP TAY: Nguoi khao sat da doi chieu giao dien Activation hoac slmgr /xpr; '+$selection+'. Truoc khi nhap: '+$autoState+'; '+$autoMethod+'; '+$autoNote+'. Ket qua nay chi phan anh trang thai kich hoat do nguoi khao sat xac nhan, khong xac minh tinh hop le giay phep.'
+        $lic | Add-Member -MemberType NoteProperty -Name 'WindowsManualStatus' -Value $selection -Force
+        $lic | Add-Member -MemberType NoteProperty -Name 'WindowsManualTime' -Value (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') -Force
+        SurveyLog ('Windows: '+$selection+' (XAC_NHAN_THU_CONG, du lieu tu dong van duoc giu rieng)') 'WARN'
+    }
+    try {
+        Write-RawCommandText 'Windows_Manual_Confirmation' 'Read-Host Windows activation (operator)' ([string]('PreviousState='+$autoState+'; PreviousMethod='+$autoMethod+'; PreviousNote='+$autoNote+'; Decision='+$selection)) '' 'MANUAL_INPUT'
+    }catch{}
+    return $true
+}
+
 # Shared manual prompt (Windows PowerShell 2.0 compatible).
 # Can run immediately at the LICENSE timeout while other workers continue.
 function Invoke-OfficeManualPrompt([object]$lic) {
@@ -264,6 +337,7 @@ function Invoke-OfficeManualPrompt([object]$lic) {
 
 try {
     if (-not (Test-Path -LiteralPath $script:rawFolder)) { New-Item -ItemType Directory -Path $script:rawFolder -Force | Out-Null }
+    [void](New-Item -ItemType Directory -Path $env:AUDIT_RAW_OUTPUT_DIR -Force -ErrorAction Stop)
     if (-not (Test-Path -LiteralPath $script:logFolder)) { New-Item -ItemType Directory -Path $script:logFolder -Force | Out-Null }
     $logPart=($env:COMPUTERNAME -replace '[^a-zA-Z0-9_-]','_')+'_'+(Get-Date -Format 'yyyyMMdd_HHmmss_fff')
     $script:logFile=Join-Path $script:logFolder ('SurveyLog_'+$logPart+'.txt')
@@ -353,7 +427,7 @@ try {
         SurveyLog 'BUOC 5/7 - CHAY SONG SONG 3 NHOM: LICENSE | SECURITY | POLICIES' 'STEP'
         try {
             . (Join-Path $script:root 'ParallelAudit.ps1')
-            $parallelResult=Invoke-ParallelAudit -Root $script:root -OnLicenseTimeout {
+            $parallelResult=Invoke-ParallelAudit -Root $script:root -RawOutputDir $script:rawCommandFolder -OnLicenseTimeout {
                 # This callback runs in the interactive parent, not inside the
                 # -NonInteractive LICENSE worker. Other workers keep running.
                 $script:licenseTimeoutFallback=Get-QuickOfficeFallback
@@ -373,6 +447,38 @@ try {
             $auditTimings=$parallelResult.Timings
             foreach($e in @($parallelResult.Errors)){ $script:errs += ('Parallel: '+$e) }
             $lic=$parallelResult.License
+            if($parallelResult.OfficeFailed){
+                $officeFallback=$script:licenseTimeoutFallback
+                if(-not $officeFallback){$officeFallback=Get-QuickOfficeFallback}
+                if(-not $lic){$lic=$officeFallback}
+                else {
+                    foreach($field in @('OfficeInstalled','WordInstalled','ExcelInstalled','OfficeState','WordState','ExcelState','OfficeProduct','OfficeMethod','OfficeNote')){
+                        $lic.$field=$officeFallback.$field
+                    }
+                }
+            }
+            if($parallelResult.WindowsFailed){
+                . (Join-Path $script:root 'WindowsLicenseFallback.ps1')
+                $winErrors=@($parallelResult.Errors | Where-Object {([string]$_) -match 'WINDOWS|Startup'}) -join ' | '
+                $previousWinNote='Windows worker failed: '+$winErrors
+                $winFallback=Get-WindowsSlmgrFallback
+                if(-not $lic){$lic=Get-QuickOfficeFallback}
+                foreach($field in @('WindowsState','WindowsEdition','WindowsChannel','WindowsMethod','WindowsNote')){
+                    $lic.$field=$winFallback.$field
+                }
+                $lic.WindowsNote=$previousWinNote+' | SLMGR: '+$winFallback.WindowsState+'; '+$winFallback.WindowsNote
+            }
+            if($lic -and -not $parallelResult.WindowsFailed -and ([string]$lic.WindowsState) -match '^CAN_XAC_MINH'){
+                . (Join-Path $script:root 'WindowsLicenseFallback.ps1')
+                $initialState=[string]$lic.WindowsState
+                $initialNote=[string]$lic.WindowsNote
+                $winFallback=Get-WindowsSlmgrFallback
+                if($winFallback.WindowsState -eq 'DA_KICH_HOAT' -or $winFallback.WindowsState -eq 'CHUA_KICH_HOAT'){
+                    $lic.WindowsState=$winFallback.WindowsState
+                    $lic.WindowsMethod=$winFallback.WindowsMethod
+                }
+                $lic.WindowsNote='WMI: '+$initialState+'; '+$initialNote+' | SLMGR: '+$winFallback.WindowsState+'; '+$winFallback.WindowsNote
+            }
             $security=$parallelResult.Security
             $extra=$parallelResult.Extra
             $compliance=$parallelResult.Compliance
@@ -391,6 +497,16 @@ try {
         try {
             . (Join-Path $script:root 'LicenseCheck.ps1')
             $lic=GetLicenseSummary
+            if($lic -and ([string]$lic.WindowsState) -match '^CAN_XAC_MINH'){
+                . (Join-Path $script:root 'WindowsLicenseFallback.ps1')
+                $sl=Get-WindowsSlmgrFallback
+                $oldWinState=[string]$lic.WindowsState
+                $oldWinNote=[string]$lic.WindowsNote
+                if($sl.WindowsState -eq 'DA_KICH_HOAT' -or $sl.WindowsState -eq 'CHUA_KICH_HOAT'){
+                    $lic.WindowsState=$sl.WindowsState;$lic.WindowsMethod=$sl.WindowsMethod
+                }
+                $lic.WindowsNote='WMI: '+$oldWinState+'; '+$oldWinNote+' | SLMGR: '+$sl.WindowsState+'; '+$sl.WindowsNote
+            }
         } catch { $script:errs += ('Ban quyen: '+$_.Exception.Message); SurveyLog ('Loi kiem tra ban quyen: '+$_.Exception.Message) 'WARN' }
 
         SurveyLog 'BUOC 5B/7 - Kiem tra bao mat, phan mem nghi van, antivirus, TPM, BitLocker' 'STEP'
@@ -462,7 +578,7 @@ try {
     }
     if($useParallel){
         if(-not $lic){
-            # Reuse the fallback prepared at the 40-second timeout (and possibly
+            # Reuse the fallback prepared at the Office timeout (and possibly
             # already confirmed by the operator). Never perform another WMI scan.
             if ($script:licenseTimeoutFallback) {
                 $lic=$script:licenseTimeoutFallback
@@ -510,6 +626,15 @@ try {
         }
         SurveyLog ('BUOC 5 HOAN TAT - '+$parallelMode+' | Windows: '+$lic.WindowsState+' | Office: '+$lic.OfficeState) 'STEP'
     }
+    # Windows prompt is handled only in the interactive parent, after WMI and
+    # the bounded SLMGR fallback. Office remains an independent prompt.
+    if(-not $lic){
+        $lic=Get-QuickOfficeFallback
+        $lic.WindowsState='CAN_XAC_MINH_WINDOWS_LICENSE_WORKER_ERROR'
+        $lic.WindowsNote='Khong co ket qua tu module license; kiem tra SurveyLog va LenhGoc.'
+        $lic.WindowsMethod='KHONG_CO_KET_QUA_LICENSE'
+    }
+    [void](Invoke-WindowsManualPrompt $lic)
     # The timeout callback may already have shown the prompt while other
     # workers were running. Never ask the same Office question twice.
     if (-not $script:officeManualAlreadyAsked) {
@@ -528,6 +653,7 @@ try {
     $winRelease=''
     try {
         $cv=Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        Write-RawEvidence 'Registry_CurrentVersion' 'Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' $cv
         if($cv.DisplayVersion) {$winRelease=Clean $cv.DisplayVersion}
         elseif($cv.ReleaseId) {$winRelease=Clean $cv.ReleaseId}
     } catch {}
@@ -692,6 +818,11 @@ try {
     AddField $row 'Windows kích hoạt' $lic.WindowsState
     AddField $row 'Windows License Source' $lic.WindowsMethod
     AddField $row 'Windows License Note' $lic.WindowsNote
+    AddField $row 'Windows Auto State (trước nhập tay)' $lic.WindowsAutoState
+    AddField $row 'Windows Auto Method (trước nhập tay)' $lic.WindowsAutoMethod
+    AddField $row 'Windows Auto Note (trước nhập tay)' $lic.WindowsAutoNote
+    AddField $row 'Windows Manual Confirmation' $lic.WindowsManualStatus
+    AddField $row 'Windows Manual Confirmation Time' $lic.WindowsManualTime
     AddField $row 'Office License Method' $lic.OfficeMethod
     AddField $row 'Office License Note' $lic.OfficeNote
     AddField $row 'Word đã cài' $lic.WordInstalled
@@ -748,6 +879,8 @@ try {
     $reviewReasons=@($reviewReasons | Select-Object -Unique)
     AddField $row 'Mục cần đối chiếu' (Distinct $reviewReasons)
     AddField $row 'Trường còn thiếu' (Distinct $missing)
+    . (Join-Path $script:root 'ReviewReasons.ps1')
+    AddField $row 'Giải thích mục cần xác minh' (Get-AuditReviewReasons $reviewReasons $missing $script:errs $lic $security $extra $compliance $row)
 
 
     # The suspicious scan worker has already read uninstall registry under a 25s watchdog.
@@ -777,8 +910,11 @@ try {
     AddField $row 'Trạng thái danh sách ứng dụng' $appStatus
     AddField $row 'Số ứng dụng tìm thấy' $appCount
     AddField $row 'File danh sách ứng dụng' $appFile
+    AddField $row 'Thư mục kết quả lệnh gốc' ('LenhGoc\'+(Split-Path -Leaf $script:rawCommandFolder))
+    AddField $row 'File đầu ra lệnh gốc đầy đủ' ('LenhGoc\'+(Split-Path -Leaf $script:rawCommandFolder)+'\LenhGoc_TatCaLenh.txt')
     if($appStatus -ne 'DA_XUAT_DANH_SACH_REGISTRY'){
         $row.'Mục cần đối chiếu'=((@($row.'Mục cần đối chiếu') + @('Danh sach ung dung chua day du') | Where-Object {$_}) -join ' | ')
+        $row.'Giải thích mục cần xác minh'=([string]$row.'Giải thích mục cần xác minh')+' | Danh sach ung dung chua day du: '+$appStatus+'; kiem tra log quet Registry/AppInventory va thu quet lai neu can.'
     }
     SurveyLog 'BUOC 6/7 - Ghi du lieu goc vao USB' 'STEP'
     $filePart=(($env:COMPUTERNAME -replace '[^a-zA-Z0-9_-]','_') + '_' + (Get-Date -Format 'yyyyMMdd_HHmmss_fff') + '_' + [guid]::NewGuid().ToString('N').Substring(0,6))
@@ -803,6 +939,13 @@ try {
     }catch{}
     SurveyLog ('Office da ghi vao du lieu goc: '+$lic.OfficeState+' | Nguon: '+$lic.OfficeMethod) 'OK'
     SurveyLog ('Da luu du lieu goc: '+$snapshot) 'OK'
+    $rawOutputPath=Join-Path $script:rawCommandFolder 'LenhGoc_TatCaLenh.txt'
+    if(Export-RawCommandTranscript $script:rawCommandFolder $rawOutputPath){
+        SurveyLog ('Da xuat output lenh goc FULL: '+$rawOutputPath) 'OK'
+    }else{
+        $script:errs+=('Raw command transcript not written: '+$rawOutputPath)
+        SurveyLog ('Khong ghi duoc file lenh goc: '+$rawOutputPath) 'WARN'
+    }
 
     SurveyLog 'BUOC 7/7 - Tong hop CSV va Excel' 'STEP'
     . (Join-Path $script:root 'ExportExcel.ps1')

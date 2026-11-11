@@ -48,7 +48,8 @@ try {
 $required=@('Survey.ps1','LicenseCheck.ps1','ParallelAudit.ps1','ParallelAuditWorker.ps1',
     'ExportExcel.ps1','ManualEdits.ps1','SecurityAudit.ps1','SecurityExtras.ps1',
     'ComplianceExtras.ps1','CsvCompat.ps1','SuspiciousScanWorker.ps1',
-    'ConsoleFont.ps1','1_Run_Survey.bat','2_Rebuild_Excel.bat')
+    'ConsoleFont.ps1','ReviewReasons.ps1','RawEvidence.ps1','WindowsLicenseFallback.ps1',
+    '1_Run_Survey.bat','2_Rebuild_Excel.bat')
 foreach($f in $required) {
     if(-not (Test-Path -LiteralPath (Join-Path $root $f) -PathType Leaf)) {
         Result 'Required file' 'FAIL' ('Thieu '+$f)

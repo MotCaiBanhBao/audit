@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory=$true)][string]$Root
 )
 $ErrorActionPreference='Stop'
-if (@('LICENSE','SECURITY','POLICIES') -notcontains $Task) {exit 3}
+$env:AUDIT_RAW_OUTPUT_DIR=Join-Path $JobDir ('RAW_'+$Task)
+. (Join-Path $Root 'RawEvidence.ps1')
+if (@('WINDOWS','OFFICE','SECURITY','POLICIES') -notcontains $Task) {exit 3}
 $logPath=Join-Path $JobDir ($Task+'.log')
 $outputPath=Join-Path $JobDir ($Task+'.xml')
 function WorkerLog([string]$message,[string]$level='INFO') {
@@ -17,11 +19,16 @@ function SurveyLog([string]$msg,[string]$level='INFO'){ WorkerLog $msg $level }
 try {
     WorkerLog 'BAT_DAU'
     $data=$null
-    if ($Task -eq 'LICENSE') {
+    if ($Task -eq 'WINDOWS') {
         . (Join-Path $Root 'LicenseCheck.ps1')
-        WorkerLog 'Windows va Office: bat dau kiem tra'
-        $data=GetLicenseSummary
-        WorkerLog ('Windows='+$data.WindowsState+'; Office='+$data.OfficeState) 'OK'
+        WorkerLog 'Windows: bat dau kiem tra doc lap'
+        $data=GetLicenseSummary -WindowsOnly
+        WorkerLog ('Windows='+$data.WindowsState) 'OK'
+    } elseif ($Task -eq 'OFFICE') {
+        . (Join-Path $Root 'LicenseCheck.ps1')
+        WorkerLog 'Office: bat dau kiem tra doc lap'
+        $data=GetLicenseSummary -OfficeOnly
+        WorkerLog ('Office='+$data.OfficeState) 'OK'
     } elseif ($Task -eq 'SECURITY') {
         . (Join-Path $Root 'CsvCompat.ps1')
         . (Join-Path $Root 'SecurityAudit.ps1')
@@ -40,9 +47,9 @@ try {
         $extras=GetExtraSecurityAudit
         WorkerLog 'Dang kiem tra Domain/SMB1/Autorun/NTP/DHCP'
         $cs=$null; $configs=@()
-        try {$cs=Get-WmiObject Win32_ComputerSystem -ErrorAction Stop | Select-Object -First 1}
+        try {$cs=Get-WmiObject Win32_ComputerSystem -ErrorAction Stop | Select-Object -First 1;Write-RawEvidence 'WMI_ComputerSystem_Policies' 'Get-WmiObject Win32_ComputerSystem' $cs}
         catch {WorkerLog ('WMI ComputerSystem: '+$_.Exception.Message) 'WARN'}
-        try {$configs=@(Get-WmiObject Win32_NetworkAdapterConfiguration -ErrorAction Stop)}
+        try {$configs=@(Get-WmiObject Win32_NetworkAdapterConfiguration -ErrorAction Stop);Write-RawEvidence 'WMI_NetworkConfiguration_Policies' 'Get-WmiObject Win32_NetworkAdapterConfiguration' $configs}
         catch {WorkerLog ('WMI NetworkAdapterConfiguration: '+$_.Exception.Message) 'WARN'}
         $compliance=GetComplianceExtras -cs $cs -configs $configs
         # Keep separate flat objects to remain compatible with PS2 CliXml depth.
@@ -54,6 +61,7 @@ try {
         WorkerLog 'Hoan tat security policies/compliance' 'OK'
     }
     if ($null -eq $data) {throw 'Worker returned empty result'}
+    Write-RawEvidence ($Task+'_FullResult') ('Worker '+$Task+' returned fields') $data
     # Atomic per-worker result: write .tmp first, then publish .xml when complete.
     $tempPath=$outputPath+'.tmp'
     $data | Export-Clixml -Path $tempPath -ErrorAction Stop
